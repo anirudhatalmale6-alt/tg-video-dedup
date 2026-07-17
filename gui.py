@@ -222,6 +222,23 @@ class DedupApp:
         self.cancel = True
         self._log("[*] Stop requested - finishing the current step and halting...")
 
+    async def _sleep_cancellable(self, seconds, reason=""):
+        """Sleep in 1s steps so STOP works and long Telegram waits show a countdown
+        instead of looking frozen."""
+        seconds = int(seconds) + 1
+        if seconds > 5 and reason:
+            self._log(f"    {reason} - waiting {seconds}s (this is normal, not frozen). "
+                      f"You can press STOP to cancel.")
+        left = seconds
+        while left > 0:
+            if self.cancel:
+                return
+            step = min(10, left)
+            await asyncio.sleep(step)
+            left -= step
+            if seconds > 20 and left > 0:
+                self._log(f"    ...still waiting, {left}s left")
+
     def gui_prompt(self, title, prompt, secret=False):
         """Ask the user on the GUI thread; block the caller (async thread) for the answer."""
         result = {}
@@ -418,7 +435,7 @@ class DedupApp:
                             if n % 100 == 0:
                                 self._log(f"    {title}: {n} videos...")
                     except FloodWaitError as e:
-                        self._log(f"    (rate limited, waiting {e.seconds}s)"); await asyncio.sleep(e.seconds + 1)
+                        await self._sleep_cancellable(e.seconds, "Telegram rate limit")
                 total += n
                 self._log(f"[+] {title}: {n} videos.")
             scanned_ids = [gid for _, gid, _ in chats]
@@ -445,7 +462,7 @@ class DedupApp:
                     self.idx.upsert(video_record(msg, gid, title, mode, False))
                     n += 1
             except FloodWaitError as e:
-                await asyncio.sleep(e.seconds + 1)
+                await self._sleep_cancellable(e.seconds, "Telegram rate limit")
         self._log(f"[+] {title}: {n} videos indexed.")
         return n
 
@@ -466,7 +483,7 @@ class DedupApp:
                         continue
                     seen.add(msg.id); ids.append(msg.id)
             except FloodWaitError as e:
-                await asyncio.sleep(e.seconds + 1)
+                await self._sleep_cancellable(e.seconds, "Telegram rate limit")
         ids.sort()
         total = len(ids)
         if total == 0:
@@ -477,22 +494,22 @@ class DedupApp:
         self._set_busy(True)
         try:
             done = 0
-            for i in range(0, total, 100):                 # Telegram allows up to 100 per forward
+            BATCH = 30            # smaller batches = smoother, fewer big rate-limit pauses
+            for i in range(0, total, BATCH):
                 if self.cancel:
                     self._log("[*] Stopped by user."); break
-                batch = ids[i:i + 100]
-                while True:
+                batch = ids[i:i + BATCH]
+                while not self.cancel:
                     try:
                         await self.client.forward_messages(dst_ent, batch, src_ent)
                         break
                     except FloodWaitError as e:
-                        self._log(f"    (Telegram pacing: waiting {e.seconds}s, this is normal)")
-                        await asyncio.sleep(e.seconds + 1)
+                        await self._sleep_cancellable(e.seconds, "Telegram rate limit")
                     except Exception as e:
                         self._log(f"    ! batch error, skipping: {e}"); break
                 done += len(batch)
-                self._log(f"    copied {done}/{total}...")
-                await asyncio.sleep(1.5)                    # gentle pacing so Telegram is happy
+                self._log(f"    copied {min(done, total)}/{total}...")
+                await self._sleep_cancellable(2, "")       # gentle pacing so Telegram is happy
             self._log(f"[+] Copy {'stopped' if self.cancel else 'finished'}: {done} video(s) in '{dst_name}'.")
             if self.cancel:
                 return
@@ -555,7 +572,7 @@ class DedupApp:
                             self.idx.upsert(video_record(msg, gid, title, mode, False))
                             new += 1
                 except FloodWaitError as e:
-                    await asyncio.sleep(e.seconds + 1)
+                    await self._sleep_cancellable(e.seconds, "Telegram rate limit")
         if new:
             self._log(f"[+] Catch-up: indexed {new} video(s) added while the app was off.")
         return new
