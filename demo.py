@@ -53,12 +53,11 @@ class DemoApp(guimod.DedupApp):
     async def _load_groups(self):
         await self._ensure_client()
         self.groups = list(GROUPS)
+        self.groups.sort(key=lambda g: g[1].lower())
         def fill():
-            self.glist.delete(0, "end")
-            names = []
-            for _, n in self.groups:
-                self.glist.insert("end", n)
-                names.append(n)
+            self.search_var.set("")
+            self._apply_filter()
+            names = [n for _, n in self.groups]
             self.copy_src["values"] = names
             self.copy_dst["values"] = names
         self.root.after(0, fill)

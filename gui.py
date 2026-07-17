@@ -44,7 +44,8 @@ class DedupApp:
         self.loop = asyncio.new_event_loop()
         self.client = None
         self.idx = None
-        self.groups = []          # list of (id, name)
+        self.groups = []          # full list of (id, name), sorted by name
+        self.displayed = []       # currently shown in the listbox (after search filter)
         self.mode = tk.StringVar(value="name_size")
         self.watching = False
         self._watch_handler = None
@@ -109,11 +110,19 @@ class DedupApp:
         mid = ttk.Frame(self.root); mid.pack(fill="both", expand=False, **pad)
         gf = ttk.LabelFrame(mid, text="2. Your groups (tick the ones to clean; none ticked = ALL)")
         gf.pack(side="left", fill="both", expand=True)
-        self.glist = tk.Listbox(gf, selectmode="multiple", height=9, exportselection=False)
+        # search row
+        srow = ttk.Frame(gf); srow.pack(side="top", fill="x", padx=4, pady=(4, 0))
+        ttk.Label(srow, text="Search:").pack(side="left")
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *a: self._apply_filter())
+        ttk.Entry(srow, textvariable=self.search_var).pack(side="left", fill="x", expand=True, padx=4)
+        # list + scrollbar + buttons
+        body = ttk.Frame(gf); body.pack(side="top", fill="both", expand=True)
+        self.glist = tk.Listbox(body, selectmode="multiple", height=8, exportselection=False)
         self.glist.pack(side="left", fill="both", expand=True, padx=4, pady=4)
-        sb = ttk.Scrollbar(gf, orient="vertical", command=self.glist.yview)
+        sb = ttk.Scrollbar(body, orient="vertical", command=self.glist.yview)
         sb.pack(side="left", fill="y"); self.glist.config(yscrollcommand=sb.set)
-        gbtns = ttk.Frame(gf); gbtns.pack(side="left", fill="y", padx=4)
+        gbtns = ttk.Frame(body); gbtns.pack(side="left", fill="y", padx=4)
         ttk.Button(gbtns, text="Load my groups", command=self.on_load_groups).pack(fill="x", pady=2)
         ttk.Button(gbtns, text="Select all", command=lambda: self.glist.select_set(0, "end")).pack(fill="x", pady=2)
         ttk.Button(gbtns, text="Clear", command=lambda: self.glist.select_clear(0, "end")).pack(fill="x", pady=2)
@@ -287,11 +296,19 @@ class DedupApp:
             elif "flood" in low:
                 self._log("    -> Too many attempts. Please wait a while before trying again.")
 
+    def _apply_filter(self):
+        """Filter the visible group list by the search box (matches English or Arabic)."""
+        q = self.search_var.get().strip().lower()
+        self.displayed = [g for g in self.groups if q in g[1].lower()] if q else list(self.groups)
+        self.glist.delete(0, "end")
+        for _, name in self.displayed:
+            self.glist.insert("end", name)
+
     def _selected_targets(self):
         sel = self.glist.curselection()
-        if not sel or not self.groups:
+        if not sel or not self.displayed:
             return None  # None => all
-        return [self.groups[i][0] for i in sel]
+        return [self.displayed[i][0] for i in sel]
 
     async def _resolve_chats(self):
         ids = self._selected_targets()
@@ -311,17 +328,18 @@ class DedupApp:
         self.groups = []
         async for d in self.client.iter_dialogs():
             if d.is_group or d.is_channel:
-                self.groups.append((d.id, d.name))
+                self.groups.append((d.id, d.name or "(no name)"))
+        # sort alphabetically by name (case-insensitive) so Arabic + English are easy to find
+        self.groups.sort(key=lambda g: g[1].lower())
         def fill():
-            self.glist.delete(0, "end")
-            names = []
-            for _, name in self.groups:
-                self.glist.insert("end", name)
-                names.append(name)
+            self.search_var.set("")          # clears filter -> shows all
+            self._apply_filter()             # populates the listbox from the sorted list
+            names = [n for _, n in self.groups]
             self.copy_src["values"] = names
             self.copy_dst["values"] = names
         self.root.after(0, fill)
-        self._log(f"[+] Loaded {len(self.groups)} group(s). Tick the ones to clean (or leave all unticked = all).")
+        self._log(f"[+] Loaded {len(self.groups)} group(s), sorted A-Z. "
+                  f"Use the Search box to find any group quickly.")
 
     async def _scan(self):
         if not await self._ensure_client():
