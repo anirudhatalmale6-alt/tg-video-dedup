@@ -14,9 +14,12 @@ It works in two phases:
 Nothing is ever deleted without a **`y/n` confirmation**, and the **oldest**
 copy of each video is always the one kept.
 
-There are two ways to use it:
+There are three ways to use it:
 
-* **Desktop app (recommended)** – a single window where you load your groups,
+* **Ready-made Windows .exe (easiest – no install)** – just download and
+  double-click:
+  **[Download TelegramDuplicateRemover.exe](https://github.com/anirudhatalmale6-alt/tg-video-dedup/releases/download/latest/TelegramDuplicateRemover.exe)**
+* **Desktop app from source** – a single window where you load your groups,
   tick the ones to clean, and click buttons. Run `python gui.py`.
 * **Command line** – same features from the terminal (`python tgdedup.py ...`).
 
