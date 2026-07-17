@@ -156,7 +156,14 @@ class DedupApp:
         self.loop.run_forever()
 
     def submit(self, coro):
-        return asyncio.run_coroutine_threadsafe(coro, self.loop)
+        fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        def _cb(f):
+            try:
+                f.result()
+            except Exception as e:
+                self._log(f"[!] Unexpected error: {e}")
+        fut.add_done_callback(_cb)
+        return fut
 
     def _log(self, msg):
         self.logq.put(str(msg))
@@ -208,40 +215,77 @@ class DedupApp:
             self._log("[!] Please enter your API Hash."); return False
         self.idx = self.idx or Index()
         self.client = TelegramClient(self._prefill["session"], api_id, api_hash)
-        await self.client.connect()
+        try:
+            self._log("[*] Connecting to Telegram...")
+            await asyncio.wait_for(self.client.connect(), timeout=30)
+        except (asyncio.TimeoutError, OSError, ConnectionError) as e:
+            self._set_status("Cannot reach Telegram", ok=False)
+            self._log(f"[!] Could not connect to Telegram ({e or 'timed out'}).")
+            self._log("    Your network/firewall is most likely blocking Telegram.")
+            self._log("    FIX: connect this PC to your phone's hotspot, or turn on a VPN,")
+            self._log("         then click 'Save & Log in' again.")
+            return False
+        except Exception as e:
+            self._set_status("Connection error", ok=False)
+            self._log(f"[!] Connection error: {e}")
+            return False
+        self._log("[+] Connected to Telegram.")
         return True
 
     async def _login(self):
-        self._save_config()
-        if not await self._ensure_client():
-            return
-        if await self.client.is_user_authorized():
-            me = await self.client.get_me()
-            self._set_status(f"Logged in as {me.first_name}", ok=True)
-            self._log(f"[+] Already logged in as {me.first_name}.")
-            self._enable_after_login(); return
-        self._log("[*] Logging in - Telegram will send a code to your phone.")
-        phone = self.gui_prompt("Login", "Enter your phone number (with country code, e.g. +9715...):")
-        if not phone:
-            self._log("[!] Login cancelled."); return
         try:
+            self._save_config()
+            if not await self._ensure_client():
+                return
+            if await self.client.is_user_authorized():
+                me = await self.client.get_me()
+                self._set_status(f"Logged in as {me.first_name}", ok=True)
+                self._log(f"[+] Already logged in as {me.first_name}.")
+                self._enable_after_login(); return
+            self._log("[*] Starting login. A box will ask for your phone number next.")
+            phone = self.gui_prompt("Login - step 1 of 2",
+                                    "Enter your phone number WITH country code\n"
+                                    "(example: +966XXXXXXXXX):")
+            if not phone:
+                self._log("[!] Login cancelled (no phone number entered)."); return
+            phone = phone.strip().replace(" ", "")
+            if not phone.startswith("+"):
+                self._log("[!] Phone must start with + and your country code (e.g. +966...). "
+                          "Click 'Save & Log in' to try again.")
+                return
+            self._log(f"[*] Sending a login code to {phone} - check the Telegram app on your phone "
+                      f"(message from 'Telegram').")
             await self.client.send_code_request(phone)
-            code = self.gui_prompt("Login", "Enter the code Telegram just sent you:")
+            code = self.gui_prompt("Login - step 2 of 2",
+                                   "Enter the code Telegram just sent you\n"
+                                   "(it appears inside your Telegram app):")
+            if not code:
+                self._log("[!] Login cancelled (no code entered)."); return
             try:
-                await self.client.sign_in(phone, code)
+                await self.client.sign_in(phone, code.strip())
             except Exception as e:
                 if "password" in str(e).lower() or "2fa" in str(e).lower() or "SESSION_PASSWORD" in str(e):
-                    pw = self.gui_prompt("Login", "Two-step password:", secret=True)
+                    pw = self.gui_prompt("Login", "You have two-step verification.\n"
+                                                  "Enter your Telegram password:", secret=True)
                     await self.client.sign_in(password=pw)
                 else:
                     raise
             me = await self.client.get_me()
             self._set_status(f"Logged in as {me.first_name}", ok=True)
-            self._log(f"[+] Logged in as {me.first_name}. You won't need to do this again.")
+            self._log(f"[+] Logged in as {me.first_name}! You won't need to do this again.")
+            self._log("    Next: click 'Load my groups'.")
             self._enable_after_login()
         except Exception as e:
             self._set_status("Login failed", ok=False)
-            self._log(f"[!] Login failed: {e}")
+            msg = str(e)
+            self._log(f"[!] Login failed: {msg}")
+            low = msg.lower()
+            if "phone_number_invalid" in low:
+                self._log("    -> The phone number format is wrong. Use + and country code.")
+            elif "phone_code_invalid" in low or "code" in low:
+                self._log("    -> The code was wrong or expired. Click 'Save & Log in' to get a new code.")
+            elif "flood" in low:
+                self._log("    -> Too many attempts. Please wait a while before trying again.")
 
     def _selected_targets(self):
         sel = self.glist.curselection()
