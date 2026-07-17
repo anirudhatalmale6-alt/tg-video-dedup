@@ -1,0 +1,56 @@
+name: Build Windows EXE (Nuitka - low AV false positives)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-nuitka.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install app dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install telethon
+
+      - name: Build with Nuitka
+        uses: Nuitka/Nuitka-Action@main
+        with:
+          nuitka-version: main
+          script-name: gui.py
+          mode: onefile
+          enable-plugins: tk-inter
+          include-package: telethon
+          windows-console-mode: disable
+
+      - name: Rename output
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path build -Filter *.exe -Recurse | Select-Object -First 1
+          Copy-Item $exe.FullName -Destination TelegramDuplicateRemover-nuitka.exe
+          Get-Item TelegramDuplicateRemover-nuitka.exe | Format-List
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TelegramDuplicateRemover-nuitka
+          path: TelegramDuplicateRemover-nuitka.exe
+
+      - name: Publish to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Windows build
+          files: TelegramDuplicateRemover-nuitka.exe
