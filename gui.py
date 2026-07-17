@@ -50,6 +50,9 @@ class DedupApp:
         self.mode = tk.StringVar(value="name_size")
         self.watching = False
         self._watch_handler = None
+        self.cancel = False       # set by STOP button to abort a running scan/copy/delete
+        if self.mode.get() not in ("name_size", "name"):
+            self.mode.set("name_size")   # 'hash' retired: it needs downloading every file
 
         self._prefill = self._read_config()
         self._build_ui()
@@ -142,13 +145,15 @@ class DedupApp:
         af.pack(side="left", fill="y", padx=(8, 0))
         ttk.Label(af, text="Match by:").pack(anchor="w", padx=6, pady=(6, 0))
         ttk.Combobox(af, textvariable=self.mode, state="readonly", width=14,
-                     values=["name_size", "name", "hash"]).pack(padx=6, pady=2)
+                     values=["name_size", "name"]).pack(padx=6, pady=2)
         self.btn_scan = ttk.Button(af, text="Scan (build index)", command=self.on_scan, state="disabled")
         self.btn_scan.pack(fill="x", padx=6, pady=4)
         self.btn_review = ttk.Button(af, text="Review duplicates", command=self.on_review, state="disabled")
         self.btn_review.pack(fill="x", padx=6, pady=4)
         self.btn_watch = ttk.Button(af, text="Start watching", command=self.on_watch, state="disabled")
         self.btn_watch.pack(fill="x", padx=6, pady=4)
+        self.btn_stop = ttk.Button(af, text="■ STOP", command=self.on_stop, state="disabled")
+        self.btn_stop.pack(fill="x", padx=6, pady=(12, 4))
 
         # Copy videos between groups
         cp = ttk.LabelFrame(self.root, text="4. Copy videos: one group -> another (then removes duplicates)")
@@ -208,6 +213,14 @@ class DedupApp:
             for b in (self.btn_scan, self.btn_review, self.btn_watch, self.btn_copy):
                 b.config(state="normal")
         self.root.after(0, go)
+
+    def _set_busy(self, busy):
+        """Enable the STOP button while a long job runs; called from the async thread."""
+        self.root.after(0, lambda: self.btn_stop.config(state="normal" if busy else "disabled"))
+
+    def on_stop(self):
+        self.cancel = True
+        self._log("[*] Stop requested - finishing the current step and halting...")
 
     def gui_prompt(self, title, prompt, secret=False):
         """Ask the user on the GUI thread; block the caller (async thread) for the answer."""
@@ -384,28 +397,37 @@ class DedupApp:
         self._log(f"[*] Scanning {len(chats)} group(s) for videos...")
         mode = self.mode.get()
         total = 0
-        for entity, gid, title in chats:
-            self.idx.clear_group(gid)      # fresh scan: reflect Telegram exactly, no stale/cached rows
-            n = 0; seen = set()
-            for flt in (InputMessagesFilterVideo, InputMessagesFilterDocument):
-                try:
-                    async for msg in self.client.iter_messages(entity, filter=flt):
-                        if msg.id in seen or not is_video(msg):
-                            continue
-                        seen.add(msg.id)
-                        self.idx.upsert(video_record(msg, gid, title, mode, False))
-                        n += 1
-                        if n % 100 == 0:
-                            self._log(f"    {title}: {n} videos...")
-                except FloodWaitError as e:
-                    self._log(f"    (rate limited, waiting {e.seconds}s)"); await asyncio.sleep(e.seconds + 1)
-            total += n
-            self._log(f"[+] {title}: {n} videos.")
-        dups = self.idx.duplicate_groups(mode)
-        extra = sum(len(g) - 1 for g in dups)
-        self._log(f"[+] Scan done. {total} videos indexed. "
-                  f"{len(dups)} duplicate set(s) -> {extra} removable copy(ies).")
-        self._log("    Click 'Review duplicates' to see and delete them.")
+        self.cancel = False
+        self._set_busy(True)
+        try:
+            for entity, gid, title in chats:
+                if self.cancel:
+                    self._log("[*] Stopped by user."); break
+                self.idx.clear_group(gid)  # fresh scan: reflect Telegram exactly, no stale/cached rows
+                n = 0; seen = set()
+                for flt in (InputMessagesFilterVideo, InputMessagesFilterDocument):
+                    try:
+                        async for msg in self.client.iter_messages(entity, filter=flt):
+                            if self.cancel:
+                                break
+                            if msg.id in seen or not is_video(msg):
+                                continue
+                            seen.add(msg.id)
+                            self.idx.upsert(video_record(msg, gid, title, mode, False))
+                            n += 1
+                            if n % 100 == 0:
+                                self._log(f"    {title}: {n} videos...")
+                    except FloodWaitError as e:
+                        self._log(f"    (rate limited, waiting {e.seconds}s)"); await asyncio.sleep(e.seconds + 1)
+                total += n
+                self._log(f"[+] {title}: {n} videos.")
+            dups = self.idx.duplicate_groups(mode)
+            extra = sum(len(g) - 1 for g in dups)
+            self._log(f"[+] Scan {'stopped' if self.cancel else 'done'}. {total} videos indexed. "
+                      f"{len(dups)} duplicate set(s) -> {extra} removable copy(ies).")
+            self._log("    Click 'Review duplicates' to see and delete them.")
+        finally:
+            self._set_busy(False)
 
     async def _scan_one(self, entity, gid, title):
         self.idx = self.idx or Index()
@@ -414,6 +436,8 @@ class DedupApp:
         for flt in (InputMessagesFilterVideo, InputMessagesFilterDocument):
             try:
                 async for msg in self.client.iter_messages(entity, filter=flt):
+                    if self.cancel:
+                        break
                     if msg.id in seen or not is_video(msg):
                         continue
                     seen.add(msg.id)
@@ -448,29 +472,38 @@ class DedupApp:
             self._log("[!] No videos found in the source group."); return
         self._log(f"[+] Copying {total} video(s) to '{dst_name}'. "
                   f"For many videos this runs in the background - please keep the app open.")
-        done = 0
-        for i in range(0, total, 100):                 # Telegram allows up to 100 per forward
-            batch = ids[i:i + 100]
-            while True:
-                try:
-                    await self.client.forward_messages(dst_ent, batch, src_ent)
-                    break
-                except FloodWaitError as e:
-                    self._log(f"    (Telegram pacing: waiting {e.seconds}s, this is normal)")
-                    await asyncio.sleep(e.seconds + 1)
-                except Exception as e:
-                    self._log(f"    ! batch error, skipping: {e}"); break
-            done += len(batch)
-            self._log(f"    copied {done}/{total}...")
-            await asyncio.sleep(1.5)                    # gentle pacing so Telegram is happy
-        self._log(f"[+] Copy finished: {done} video(s) now in '{dst_name}'.")
-        # Then apply the duplicate rules on the destination (as requested).
-        self._log("[*] Applying duplicate rules on the destination group...")
-        await self._scan_one(dst_ent, dst_gid, dst_name)
-        dups = self.idx.duplicate_groups(self.mode.get())
-        extra = sum(len(g) - 1 for g in dups)
-        self._log(f"[+] Done. {extra} duplicate copy(ies) detected - "
-                  f"click 'Review duplicates' to remove them (keeps the oldest).")
+        self.cancel = False
+        self._set_busy(True)
+        try:
+            done = 0
+            for i in range(0, total, 100):                 # Telegram allows up to 100 per forward
+                if self.cancel:
+                    self._log("[*] Stopped by user."); break
+                batch = ids[i:i + 100]
+                while True:
+                    try:
+                        await self.client.forward_messages(dst_ent, batch, src_ent)
+                        break
+                    except FloodWaitError as e:
+                        self._log(f"    (Telegram pacing: waiting {e.seconds}s, this is normal)")
+                        await asyncio.sleep(e.seconds + 1)
+                    except Exception as e:
+                        self._log(f"    ! batch error, skipping: {e}"); break
+                done += len(batch)
+                self._log(f"    copied {done}/{total}...")
+                await asyncio.sleep(1.5)                    # gentle pacing so Telegram is happy
+            self._log(f"[+] Copy {'stopped' if self.cancel else 'finished'}: {done} video(s) in '{dst_name}'.")
+            if self.cancel:
+                return
+            # Then apply the duplicate rules on the destination (as requested).
+            self._log("[*] Applying duplicate rules on the destination group...")
+            await self._scan_one(dst_ent, dst_gid, dst_name)
+            dups = self.idx.duplicate_groups(self.mode.get())
+            extra = sum(len(g) - 1 for g in dups)
+            self._log(f"[+] Done. {extra} duplicate copy(ies) detected - "
+                      f"click 'Review duplicates' to remove them (keeps the oldest).")
+        finally:
+            self._set_busy(False)
 
     async def _collect_dups(self):
         if not self.idx:
@@ -480,16 +513,23 @@ class DedupApp:
     async def _delete_msgs(self, items):
         """items: list of (group_id, message_id, group_name)."""
         ok = 0
-        for gid, mid, gname in items:
-            try:
-                ent = await self.client.get_entity(gid)
-                await self.client.delete_messages(ent, [mid], revoke=True)
-                self.idx.mark_deleted(gid, mid)
-                ok += 1
-                self._log(f"    ✓ deleted msg {mid} in {gname}")
-            except Exception as e:
-                self._log(f"    ✗ msg {mid} in {gname}: {e}")
-        self._log(f"[+] Deleted {ok}/{len(items)} duplicate video(s).")
+        self.cancel = False
+        self._set_busy(True)
+        try:
+            for gid, mid, gname in items:
+                if self.cancel:
+                    self._log("[*] Stopped by user - remaining deletions skipped."); break
+                try:
+                    ent = await self.client.get_entity(gid)
+                    await self.client.delete_messages(ent, [mid], revoke=True)
+                    self.idx.mark_deleted(gid, mid)
+                    ok += 1
+                    self._log(f"    ✓ deleted msg {mid} in {gname}")
+                except Exception as e:
+                    self._log(f"    ✗ msg {mid} in {gname}: {e}")
+            self._log(f"[+] Deleted {ok}/{len(items)} duplicate video(s).")
+        finally:
+            self._set_busy(False)
 
     async def _incremental_index(self, chats):
         """Catch-up: index videos posted while the app was closed."""
@@ -578,7 +618,15 @@ class DedupApp:
     # ---------------- button callbacks ----------------
     def on_login(self):        self.submit(self._login())
     def on_load_groups(self):  self.submit(self._load_groups())
-    def on_scan(self):         self.submit(self._scan())
+    def on_scan(self):
+        if self.groups and self._selected_targets() is None:
+            if not messagebox.askyesno(
+                    "No groups ticked",
+                    f"You haven't ticked any group, so this will scan ALL "
+                    f"{len(self.groups)} of your groups.\n\nContinue with all groups?"):
+                self._log("[*] Scan cancelled. Tick the groups you want, then Scan again.")
+                return
+        self.submit(self._scan())
     def on_watch(self):
         if self.watching:
             self.submit(self._stop_watch())
