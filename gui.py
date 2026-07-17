@@ -159,6 +159,8 @@ class DedupApp:
         self.btn_review.pack(fill="x", padx=6, pady=4)
         self.btn_watch = ttk.Button(af, text="Start watching", command=self.on_watch, state="disabled")
         self.btn_watch.pack(fill="x", padx=6, pady=4)
+        self.btn_cross = ttk.Button(af, text="Check vs other groups", command=self.on_cross, state="disabled")
+        self.btn_cross.pack(fill="x", padx=6, pady=4)
         self.btn_stop = ttk.Button(af, text="■ STOP", command=self.on_stop, state="disabled")
         self.btn_stop.pack(fill="x", padx=6, pady=(12, 4))
 
@@ -217,7 +219,8 @@ class DedupApp:
 
     def _enable_after_login(self):
         def go():
-            for b in (self.btn_scan, self.btn_review, self.btn_watch, self.btn_copy):
+            for b in (self.btn_scan, self.btn_review, self.btn_watch,
+                      self.btn_copy, self.btn_cross):
                 b.config(state="normal")
         self.root.after(0, go)
 
@@ -683,6 +686,75 @@ class DedupApp:
                 f"can remove them. Continue?"):
             return
         self.submit(self._copy(src[0], src[1], dst[0], dst[1]))
+
+    def on_cross(self):
+        if not self.groups:
+            messagebox.showinfo("Check vs other groups", "Click 'Load my groups' first.")
+            return
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Check one group against others")
+        dlg.geometry("560x470")
+        names = [n for _, n in self.groups]
+        ttk.Label(dlg, text="Delete duplicates FROM this group (the 'variable' group):",
+                  ).pack(anchor="w", padx=10, pady=(10, 2))
+        var_cb = ttk.Combobox(dlg, state="readonly", values=names, width=48)
+        var_cb.pack(anchor="w", padx=10)
+        ttk.Label(dlg, text="\nKEEP these groups (the 'static' groups - tick one or more).\n"
+                            "Any video in the variable group that also exists here will be\n"
+                            "offered for deletion FROM the variable group only:",
+                  ).pack(anchor="w", padx=10, pady=(6, 2))
+        lb = tk.Listbox(dlg, selectmode="multiple", height=10, exportselection=False)
+        for n in names:
+            lb.insert("end", n)
+        lb.pack(fill="both", expand=True, padx=10, pady=4)
+
+        def go():
+            vi = var_cb.current()
+            if vi < 0:
+                messagebox.showinfo("Pick a group", "Choose the variable group to delete from.")
+                return
+            static_idx = [i for i in lb.curselection() if i != vi]
+            if not static_idx:
+                messagebox.showinfo("Pick static groups", "Tick at least one group to keep/compare against.")
+                return
+            variable = self.groups[vi]
+            statics = [self.groups[i] for i in static_idx]
+            dlg.destroy()
+            if not messagebox.askyesno(
+                    "Confirm",
+                    f"Find videos in '{variable[1]}' that also exist in "
+                    f"{len(statics)} other group(s), to delete from '{variable[1]}'?\n\n"
+                    f"The other group(s) will NOT be touched."):
+                return
+            self.submit(self._cross_check(variable, statics))
+        bar = ttk.Frame(dlg); bar.pack(side="bottom", fill="x")
+        ttk.Button(bar, text="Find duplicates", command=go).pack(side="right", padx=10, pady=8)
+        ttk.Button(bar, text="Cancel", command=dlg.destroy).pack(side="right", pady=8)
+
+    async def _cross_check(self, variable, statics):
+        if not await self._ensure_client():
+            return
+        self.cancel = False
+        self._set_busy(True)
+        try:
+            v_gid, v_name = variable
+            self._log(f"[*] Cross-check: '{v_name}' vs {len(statics)} other group(s). "
+                      f"Refreshing the groups first...")
+            # fresh scan of the variable group and each static group
+            for gid, name in [variable] + list(statics):
+                if self.cancel:
+                    self._log("[*] Stopped."); return
+                try:
+                    ent = await self.client.get_entity(gid)
+                    await self._scan_one(ent, gid, name)
+                except Exception as e:
+                    self._log(f"    ! could not read {name}: {e}")
+            sets = self.idx.cross_group_duplicates(v_gid, [g for g, _ in statics], self.mode.get())
+            self._log(f"[+] Found {len(sets)} video(s) in '{v_name}' that already exist in the "
+                      f"other group(s). Opening review - they will be deleted from '{v_name}' only.")
+            self.root.after(0, lambda: self._open_review(sets))
+        finally:
+            self._set_busy(False)
 
     def on_review(self):
         fut = self.submit(self._collect_dups())

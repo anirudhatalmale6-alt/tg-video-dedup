@@ -168,6 +168,55 @@ class Index:
             groups.append(current)
         return groups
 
+    def cross_group_duplicates(self, variable_gid, static_gids, mode="name_size"):
+        """
+        Find videos in the VARIABLE group that also exist in any of the STATIC
+        groups. These are candidates to delete FROM the variable group only
+        (the static groups are never touched).
+
+        Returns pseudo duplicate-sets shaped like duplicate_groups(): each set is
+        [keep_row, victim_row] where keep_row describes the static group that
+        already has the file, and victim_row is the copy in the variable group.
+        """
+        static_gids = [g for g in (static_gids or []) if g != variable_gid]
+        if not static_gids:
+            return []
+        place = ",".join("?" for _ in static_gids)
+        size_cond = "" if mode == "name" else " AND b.size = a.size"
+        cur = self.conn.execute(
+            f"""
+            SELECT a.*, (
+                SELECT b.group_name FROM videos b
+                WHERE b.group_id IN ({place}) AND b.status='kept'
+                  AND b.norm_name = a.norm_name {size_cond}
+                ORDER BY b.date ASC LIMIT 1
+            ) AS match_group
+            FROM videos a
+            WHERE a.group_id = ? AND a.status='kept'
+              AND a.norm_name IS NOT NULL AND a.norm_name <> ''
+              AND EXISTS (
+                  SELECT 1 FROM videos b
+                  WHERE b.group_id IN ({place}) AND b.status='kept'
+                    AND b.norm_name = a.norm_name {size_cond}
+              )
+            ORDER BY a.norm_name, a.date ASC
+            """,
+            static_gids + [variable_gid] + static_gids,
+        )
+        groups = []
+        for r in cur.fetchall():
+            a = dict(r)
+            match = a.pop("match_group", None) or "another group"
+            keep = {
+                "group_name": f"exists in: {match}", "date": "kept (not touched)",
+                "filename": a["filename"], "size": a["size"],
+                # use the variable copy's ids for the preview - it's the same file
+                "group_id": a["group_id"], "message_id": a["message_id"],
+                "norm_name": a["norm_name"],
+            }
+            groups.append([keep, a])
+        return groups
+
     def stats(self):
         c = self.conn.execute
         total   = c("SELECT COUNT(*) FROM videos WHERE status='kept'").fetchone()[0]

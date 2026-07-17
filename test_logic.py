@@ -113,8 +113,35 @@ assert len(only_g2) == 1 and all(r["group_id"]==2 for r in only_g2[0])
 assert len(only_g1) == 1 and all(r["group_id"]==1 for r in only_g1[0])
 print("7. duplicate_groups scoped to given group_ids only  OK")
 
+# ---- Scenario 8: cross-group check (delete from variable, keep static) ----
+for db in ("test_index4.db",):
+    if os.path.exists(db): os.remove(db)
+c = Index("test_index4.db")
+mid[0] = 0
+def addc(name, size, group):
+    mid[0]+=1
+    c.upsert({"group_id":group,"group_name":f"G{group}","message_id":mid[0],"filename":name,
+              "norm_name":name.lower(),"size":size,"mime_type":"video/mp4",
+              "file_unique_id":str(mid[0]),"date":base.isoformat(),
+              "content_hash":None,"status":"kept"})
+# variable group A (id 1): x, y, z
+addc("x.mp4",1,1); addc("y.mp4",2,1); addc("z.mp4",3,1)
+# static B (id 2) has y ; static C (id 3) has z ; neither has x
+addc("y.mp4",2,2)
+addc("z.mp4",3,3)
+cross = c.cross_group_duplicates(1, [2,3], "name_size")
+victims = sorted(g[1]["filename"] for g in cross)
+assert victims == ["y.mp4","z.mp4"], victims           # x kept (unique), y & z removable from A
+assert all(g[1]["group_id"] == 1 for g in cross)       # victims are always in the variable group
+print("8. cross-group: deletes from variable group only, keeps static  OK")
+# static groups must never be offered for deletion even if reversed
+rev = c.cross_group_duplicates(2, [1], "name_size")
+assert [g[1]["filename"] for g in rev] == ["y.mp4"] and rev[0][1]["group_id"] == 2
+print("9. cross-group direction is respected (variable is the one emptied)  OK")
+c.close()
+
 u.close()
 idx.close(); z.close()
-for db in (TESTDB, "test_index2.db", "test_index3.db"):
+for db in (TESTDB, "test_index2.db", "test_index3.db", "test_index4.db"):
     if os.path.exists(db): os.remove(db)
 print("\nALL TESTS PASSED")
