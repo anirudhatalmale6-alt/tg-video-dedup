@@ -53,6 +53,7 @@ class DemoApp(guimod.DedupApp):
     async def _load_groups(self):
         await self._ensure_client()
         self.groups = list(GROUPS)
+        self.checkvars = {}
         self.groups.sort(key=lambda g: g[1].lower())
         def fill():
             self.search_var.set("")

@@ -45,7 +45,8 @@ class DedupApp:
         self.client = None
         self.idx = None
         self.groups = []          # full list of (id, name), sorted by name
-        self.displayed = []       # currently shown in the listbox (after search filter)
+        self.displayed = []       # currently shown (after search filter)
+        self.checkvars = {}       # group_id -> BooleanVar (persists across filtering)
         self.mode = tk.StringVar(value="name_size")
         self.watching = False
         self._watch_handler = None
@@ -116,16 +117,25 @@ class DedupApp:
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *a: self._apply_filter())
         ttk.Entry(srow, textvariable=self.search_var).pack(side="left", fill="x", expand=True, padx=4)
-        # list + scrollbar + buttons
+        # body: scrollable checkbox list + buttons
         body = ttk.Frame(gf); body.pack(side="top", fill="both", expand=True)
-        self.glist = tk.Listbox(body, selectmode="multiple", height=8, exportselection=False)
-        self.glist.pack(side="left", fill="both", expand=True, padx=4, pady=4)
-        sb = ttk.Scrollbar(body, orient="vertical", command=self.glist.yview)
-        sb.pack(side="left", fill="y"); self.glist.config(yscrollcommand=sb.set)
+        self.gcanvas = tk.Canvas(body, height=170, highlightthickness=0)
+        self.gcanvas.pack(side="left", fill="both", expand=True, padx=4, pady=4)
+        gsb = ttk.Scrollbar(body, orient="vertical", command=self.gcanvas.yview)
+        gsb.pack(side="left", fill="y")
+        self.gcanvas.configure(yscrollcommand=gsb.set)
+        self.check_inner = ttk.Frame(self.gcanvas)
+        self._check_win = self.gcanvas.create_window((0, 0), window=self.check_inner, anchor="nw")
+        self.check_inner.bind("<Configure>",
+                              lambda e: self.gcanvas.configure(scrollregion=self.gcanvas.bbox("all")))
+        self.gcanvas.bind("<Configure>",
+                          lambda e: self.gcanvas.itemconfig(self._check_win, width=e.width))
+        self.gcanvas.bind_all("<MouseWheel>",
+                              lambda e: self.gcanvas.yview_scroll(int(-e.delta / 120), "units"))
         gbtns = ttk.Frame(body); gbtns.pack(side="left", fill="y", padx=4)
         ttk.Button(gbtns, text="Load my groups", command=self.on_load_groups).pack(fill="x", pady=2)
-        ttk.Button(gbtns, text="Select all", command=lambda: self.glist.select_set(0, "end")).pack(fill="x", pady=2)
-        ttk.Button(gbtns, text="Clear", command=lambda: self.glist.select_clear(0, "end")).pack(fill="x", pady=2)
+        ttk.Button(gbtns, text="Select all", command=self._check_all).pack(fill="x", pady=2)
+        ttk.Button(gbtns, text="Clear", command=self._check_none).pack(fill="x", pady=2)
 
         # Actions
         af = ttk.LabelFrame(mid, text="3. Actions")
@@ -297,18 +307,28 @@ class DedupApp:
                 self._log("    -> Too many attempts. Please wait a while before trying again.")
 
     def _apply_filter(self):
-        """Filter the visible group list by the search box (matches English or Arabic)."""
+        """Rebuild the visible checkbox list from the search box (matches English or Arabic)."""
         q = self.search_var.get().strip().lower()
         self.displayed = [g for g in self.groups if q in g[1].lower()] if q else list(self.groups)
-        self.glist.delete(0, "end")
-        for _, name in self.displayed:
-            self.glist.insert("end", name)
+        for w in self.check_inner.winfo_children():
+            w.destroy()
+        for gid, name in self.displayed:
+            var = self.checkvars.setdefault(gid, tk.BooleanVar(value=False))
+            ttk.Checkbutton(self.check_inner, text=name, variable=var).pack(anchor="w", fill="x")
+        self.gcanvas.yview_moveto(0)
+
+    def _check_all(self):
+        for gid, _ in self.displayed:
+            self.checkvars.setdefault(gid, tk.BooleanVar()).set(True)
+
+    def _check_none(self):
+        for gid, _ in self.displayed:
+            if gid in self.checkvars:
+                self.checkvars[gid].set(False)
 
     def _selected_targets(self):
-        sel = self.glist.curselection()
-        if not sel or not self.displayed:
-            return None  # None => all
-        return [self.displayed[i][0] for i in sel]
+        sel = [gid for gid, var in self.checkvars.items() if var.get()]
+        return sel or None  # None => all
 
     async def _resolve_chats(self):
         ids = self._selected_targets()
@@ -326,20 +346,33 @@ class DedupApp:
             self._log("[!] Please log in first."); return
         self._log("[*] Loading your groups...")
         self.groups = []
+        self.checkvars = {}
+        seen_ids = set()
         async for d in self.client.iter_dialogs():
-            if d.is_group or d.is_channel:
-                self.groups.append((d.id, d.name or "(no name)"))
+            if not (d.is_group or d.is_channel):
+                continue
+            ent = d.entity
+            # skip old "legacy" groups that were upgraded to supergroups (they show as a
+            # duplicate of the real group), and any deactivated chat
+            if getattr(ent, "migrated_to", None) is not None:
+                continue
+            if getattr(ent, "deactivated", False):
+                continue
+            if d.id in seen_ids:                 # safety: never list the same group twice
+                continue
+            seen_ids.add(d.id)
+            self.groups.append((d.id, d.name or "(no name)"))
         # sort alphabetically by name (case-insensitive) so Arabic + English are easy to find
         self.groups.sort(key=lambda g: g[1].lower())
         def fill():
             self.search_var.set("")          # clears filter -> shows all
-            self._apply_filter()             # populates the listbox from the sorted list
+            self._apply_filter()             # builds the checkbox list from the sorted groups
             names = [n for _, n in self.groups]
             self.copy_src["values"] = names
             self.copy_dst["values"] = names
         self.root.after(0, fill)
         self._log(f"[+] Loaded {len(self.groups)} group(s), sorted A-Z. "
-                  f"Use the Search box to find any group quickly.")
+                  f"Tick the ones you want, or use Search to find them quickly.")
 
     async def _scan(self):
         if not await self._ensure_client():
