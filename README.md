@@ -83,6 +83,11 @@ Then, top to bottom in the window:
 5. Click **Start watching** – Phase 2. It first catches up on anything added
    while the app was off, then checks every new video live. Leave it running.
 
+**Copy videos between groups:** in section 4, pick a **From** group and a **To**
+group, click **Copy all videos**. It forwards every video to the destination
+(handles 1000+ with automatic pacing), then detects duplicates there so you can
+remove them.
+
 ## Usage – Command line
 
 ```

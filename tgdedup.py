@@ -386,6 +386,39 @@ async def cmd_watch(cfg, auto=False):
     await client.run_until_disconnected()
 
 
+async def cmd_copy(cfg, source, dest):
+    """Copy all videos from one group to another, then index the destination."""
+    if not source or not dest:
+        print("[!] Use: python tgdedup.py copy --source <group> --dest <group>"); return
+    client = make_client(cfg)
+    await client.start()
+    idx = Index()
+    src_ent = await client.get_entity(int(source) if source.lstrip("-").isdigit() else source)
+    dst_ent = await client.get_entity(int(dest) if dest.lstrip("-").isdigit() else dest)
+    print(f"[+] Collecting videos in source...")
+    ids = []
+    async for msg in _iter_videos(client, src_ent):
+        ids.append(msg.id)
+    ids.sort()
+    if not ids:
+        print("[!] No videos in source."); await client.disconnect(); return
+    print(f"[+] Copying {len(ids)} video(s)...")
+    done = 0
+    for i in range(0, len(ids), 100):
+        batch = ids[i:i + 100]
+        while True:
+            try:
+                await client.forward_messages(dst_ent, batch, src_ent); break
+            except FloodWaitError as e:
+                print(f"    (pacing {e.seconds}s)"); await asyncio.sleep(e.seconds + 1)
+        done += len(batch)
+        print(f"    {done}/{len(ids)}")
+        await asyncio.sleep(1.5)
+    print(f"[+] Copied {done} video(s). Run 'scan' + 'dedup' to remove duplicates in the destination.")
+    idx.close()
+    await client.disconnect()
+
+
 async def cmd_stats(cfg):
     idx = Index()
     s = idx.stats()
@@ -405,10 +438,12 @@ async def cmd_stats(cfg):
 def main():
     p = argparse.ArgumentParser(description="Telegram video duplicate remover")
     p.add_argument("command",
-                   choices=["login", "groups", "scan", "dedup", "watch", "stats"])
+                   choices=["login", "groups", "scan", "dedup", "watch", "stats", "copy"])
     p.add_argument("--config", default="config.ini")
     p.add_argument("--auto", action="store_true",
                    help="delete without asking (use with care)")
+    p.add_argument("--source", help="copy: source group (@name or id)")
+    p.add_argument("--dest", help="copy: destination group (@name or id)")
     args = p.parse_args()
     cfg = load_config(args.config)
 
@@ -419,6 +454,7 @@ def main():
         "dedup":  lambda: cmd_dedup(cfg, args.auto),
         "watch":  lambda: cmd_watch(cfg, args.auto),
         "stats":  lambda: cmd_stats(cfg),
+        "copy":   lambda: cmd_copy(cfg, args.source, args.dest),
     }
     try:
         asyncio.run(runners[args.command]())

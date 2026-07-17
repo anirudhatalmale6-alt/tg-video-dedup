@@ -131,6 +131,18 @@ class DedupApp:
         self.btn_watch = ttk.Button(af, text="Start watching", command=self.on_watch, state="disabled")
         self.btn_watch.pack(fill="x", padx=6, pady=4)
 
+        # Copy videos between groups
+        cp = ttk.LabelFrame(self.root, text="4. Copy videos: one group -> another (then removes duplicates)")
+        cp.pack(fill="x", **pad)
+        ttk.Label(cp, text="From:").grid(row=0, column=0, sticky="e", **pad)
+        self.copy_src = ttk.Combobox(cp, state="readonly", width=26)
+        self.copy_src.grid(row=0, column=1, **pad)
+        ttk.Label(cp, text="To:").grid(row=0, column=2, sticky="e", **pad)
+        self.copy_dst = ttk.Combobox(cp, state="readonly", width=26)
+        self.copy_dst.grid(row=0, column=3, **pad)
+        self.btn_copy = ttk.Button(cp, text="Copy all videos", command=self.on_copy, state="disabled")
+        self.btn_copy.grid(row=0, column=4, **pad)
+
         # Log
         lf = ttk.LabelFrame(self.root, text="Activity log")
         lf.pack(fill="both", expand=True, **pad)
@@ -167,7 +179,7 @@ class DedupApp:
 
     def _enable_after_login(self):
         def go():
-            for b in (self.btn_scan, self.btn_review, self.btn_watch):
+            for b in (self.btn_scan, self.btn_review, self.btn_watch, self.btn_copy):
                 b.config(state="normal")
         self.root.after(0, go)
 
@@ -258,8 +270,12 @@ class DedupApp:
                 self.groups.append((d.id, d.name))
         def fill():
             self.glist.delete(0, "end")
+            names = []
             for _, name in self.groups:
                 self.glist.insert("end", name)
+                names.append(name)
+            self.copy_src["values"] = names
+            self.copy_dst["values"] = names
         self.root.after(0, fill)
         self._log(f"[+] Loaded {len(self.groups)} group(s). Tick the ones to clean (or leave all unticked = all).")
 
@@ -294,6 +310,70 @@ class DedupApp:
         self._log(f"[+] Scan done. {total} videos indexed. "
                   f"{len(dups)} duplicate set(s) -> {extra} removable copy(ies).")
         self._log("    Click 'Review duplicates' to see and delete them.")
+
+    async def _scan_one(self, entity, gid, title):
+        self.idx = self.idx or Index()
+        mode = self.mode.get(); n = 0; seen = set()
+        for flt in (InputMessagesFilterVideo, InputMessagesFilterDocument):
+            try:
+                async for msg in self.client.iter_messages(entity, filter=flt):
+                    if msg.id in seen or not is_video(msg):
+                        continue
+                    seen.add(msg.id)
+                    self.idx.upsert(video_record(msg, gid, title, mode, False))
+                    n += 1
+            except FloodWaitError as e:
+                await asyncio.sleep(e.seconds + 1)
+        self._log(f"[+] {title}: {n} videos indexed.")
+        return n
+
+    async def _copy(self, src_gid, src_name, dst_gid, dst_name):
+        if not await self._ensure_client():
+            return
+        try:
+            src_ent = await self.client.get_entity(src_gid)
+            dst_ent = await self.client.get_entity(dst_gid)
+        except Exception as e:
+            self._log(f"[!] Could not open groups: {e}"); return
+        self._log(f"[*] Collecting videos in '{src_name}'...")
+        ids, seen = [], set()
+        for flt in (InputMessagesFilterVideo, InputMessagesFilterDocument):
+            try:
+                async for msg in self.client.iter_messages(src_ent, filter=flt):
+                    if msg.id in seen or not is_video(msg):
+                        continue
+                    seen.add(msg.id); ids.append(msg.id)
+            except FloodWaitError as e:
+                await asyncio.sleep(e.seconds + 1)
+        ids.sort()
+        total = len(ids)
+        if total == 0:
+            self._log("[!] No videos found in the source group."); return
+        self._log(f"[+] Copying {total} video(s) to '{dst_name}'. "
+                  f"For many videos this runs in the background - please keep the app open.")
+        done = 0
+        for i in range(0, total, 100):                 # Telegram allows up to 100 per forward
+            batch = ids[i:i + 100]
+            while True:
+                try:
+                    await self.client.forward_messages(dst_ent, batch, src_ent)
+                    break
+                except FloodWaitError as e:
+                    self._log(f"    (Telegram pacing: waiting {e.seconds}s, this is normal)")
+                    await asyncio.sleep(e.seconds + 1)
+                except Exception as e:
+                    self._log(f"    ! batch error, skipping: {e}"); break
+            done += len(batch)
+            self._log(f"    copied {done}/{total}...")
+            await asyncio.sleep(1.5)                    # gentle pacing so Telegram is happy
+        self._log(f"[+] Copy finished: {done} video(s) now in '{dst_name}'.")
+        # Then apply the duplicate rules on the destination (as requested).
+        self._log("[*] Applying duplicate rules on the destination group...")
+        await self._scan_one(dst_ent, dst_gid, dst_name)
+        dups = self.idx.duplicate_groups(self.mode.get())
+        extra = sum(len(g) - 1 for g in dups)
+        self._log(f"[+] Done. {extra} duplicate copy(ies) detected - "
+                  f"click 'Review duplicates' to remove them (keeps the oldest).")
 
     async def _collect_dups(self):
         if not self.idx:
@@ -407,6 +487,24 @@ class DedupApp:
             self.submit(self._stop_watch())
         else:
             self.submit(self._start_watch())
+
+    def on_copy(self):
+        s, d = self.copy_src.current(), self.copy_dst.current()
+        if s < 0 or d < 0:
+            messagebox.showinfo("Copy videos", "Please pick both a 'From' and a 'To' group.\n"
+                                               "Click 'Load my groups' first if the lists are empty.")
+            return
+        if s == d:
+            messagebox.showinfo("Copy videos", "Source and destination must be different groups.")
+            return
+        src, dst = self.groups[s], self.groups[d]
+        if not messagebox.askyesno(
+                "Copy videos",
+                f"Copy ALL videos from:\n    {src[1]}\n\nto:\n    {dst[1]}\n\n"
+                f"After copying, duplicates in the destination will be detected so you "
+                f"can remove them. Continue?"):
+            return
+        self.submit(self._copy(src[0], src[1], dst[0], dst[1]))
 
     def on_review(self):
         fut = self.submit(self._collect_dups())

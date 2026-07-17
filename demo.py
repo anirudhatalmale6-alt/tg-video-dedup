@@ -55,8 +55,12 @@ class DemoApp(guimod.DedupApp):
         self.groups = list(GROUPS)
         def fill():
             self.glist.delete(0, "end")
+            names = []
             for _, n in self.groups:
                 self.glist.insert("end", n)
+                names.append(n)
+            self.copy_src["values"] = names
+            self.copy_dst["values"] = names
         self.root.after(0, fill)
         self._log(f"[+] Loaded {len(self.groups)} groups. Tick the ones to clean.")
 
