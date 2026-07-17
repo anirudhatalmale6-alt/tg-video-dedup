@@ -14,6 +14,12 @@ It works in two phases:
 Nothing is ever deleted without a **`y/n` confirmation**, and the **oldest**
 copy of each video is always the one kept.
 
+There are two ways to use it:
+
+* **Desktop app (recommended)** – a single window where you load your groups,
+  tick the ones to clean, and click buttons. Run `python gui.py`.
+* **Command line** – same features from the terminal (`python tgdedup.py ...`).
+
 ---
 
 ## How duplicates are detected
@@ -58,7 +64,23 @@ Copy `config.example.ini` to `config.ini` and fill in your `api_id` and
 
 ---
 
-## Usage
+## Usage – Desktop app (recommended)
+
+```
+python gui.py
+```
+
+Then, top to bottom in the window:
+1. Enter your **API ID** + **API Hash**, click **Save & Log in** (Telegram sends
+   a code to your phone – you type it in once).
+2. Click **Load my groups**, tick the groups to clean (none ticked = all).
+3. Click **Scan (build index)** – Phase 1.
+4. Click **Review duplicates** – see each duplicate set, oldest kept, tick the
+   copies to delete, then **Delete ticked copies**.
+5. Click **Start watching** – Phase 2. It first catches up on anything added
+   while the app was off, then checks every new video live. Leave it running.
+
+## Usage – Command line
 
 ```
 python tgdedup.py login     # one-time: log into Telegram (phone + code)

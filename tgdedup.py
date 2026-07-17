@@ -284,6 +284,37 @@ async def cmd_dedup(cfg, auto=False):
     await client.disconnect()
 
 
+async def catch_up(client, idx, chats, cfg, log=print):
+    """
+    After a shutdown/reboot, index any videos posted while we were offline and
+    return the ones that duplicate an already-kept video. Only fetches messages
+    newer than what we've already seen (fast).
+    """
+    found = []
+    for entity, gid, title in chats:
+        watermark = idx.max_message_id(gid)
+        if watermark == 0:
+            continue  # never scanned this group; a full 'scan' should run first
+        new_msgs = []
+        for flt in (InputMessagesFilterVideo, InputMessagesFilterDocument):
+            try:
+                async for msg in client.iter_messages(entity, min_id=watermark, filter=flt):
+                    if is_video(msg) and not idx.has_message(gid, msg.id):
+                        new_msgs.append(msg)
+            except FloodWaitError as e:
+                await asyncio.sleep(e.seconds + 1)
+        for msg in sorted(new_msgs, key=lambda m: m.id):
+            rec = video_record(msg, gid, title, cfg["mode"], cfg["compare_unnamed_by_size"])
+            matches = idx.find_matches(rec["norm_name"], rec["size"], cfg["mode"])
+            if matches:
+                found.append((rec, matches[0], entity))
+            else:
+                idx.upsert(rec)
+    if found:
+        log(f"[+] Catch-up: {len(found)} duplicate video(s) posted while offline.")
+    return found
+
+
 async def cmd_watch(cfg, auto=False):
     client = make_client(cfg)
     await client.start()
@@ -291,7 +322,24 @@ async def cmd_watch(cfg, auto=False):
     chats = await resolve_targets(client, cfg["targets"])
     watch_ids = {gid for _, gid, _ in chats}
     titles = {gid: title for _, gid, title in chats}
-    print(f"[+] Watching {len(watch_ids)} group(s) for new videos. Press Ctrl+C to stop.\n")
+
+    # ---- catch up on anything posted while the tool was closed / PC was off ----
+    print("[+] Checking for videos added while the tool was off...")
+    pending = await catch_up(client, idx, chats, cfg)
+    for rec, oldest, entity in pending:
+        print(f"\n[!] (offline dup) \"{rec['filename']}\" ({human_size(rec['size'])}) "
+              f"in {rec['group_name']} — already exists in {oldest['group_name']}")
+        if _ask("    Delete this duplicate?", auto):
+            try:
+                await client.delete_messages(entity, [rec["message_id"]], revoke=True)
+                rec["status"] = "deleted"; idx.upsert(rec)
+                print("    ✓ deleted.")
+            except Exception as e:
+                print(f"    ✗ {e}")
+        else:
+            idx.upsert(rec)
+
+    print(f"\n[+] Watching {len(watch_ids)} group(s) for new videos. Press Ctrl+C to stop.\n")
 
     loop = asyncio.get_event_loop()
 

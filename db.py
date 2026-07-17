@@ -94,6 +94,14 @@ class Index:
             (group_id, message_id))
         return cur.fetchone() is not None
 
+    def max_message_id(self, group_id: int) -> int:
+        """Highest message id we have indexed for a group (0 if none).
+        Used as a watermark so 'catch-up' only fetches messages posted since."""
+        cur = self.conn.execute(
+            "SELECT MAX(message_id) FROM videos WHERE group_id=?", (group_id,))
+        r = cur.fetchone()[0]
+        return r or 0
+
     def find_matches(self, norm_name, size, mode="name_size"):
         """Return existing KEPT rows that match by the given mode, oldest first."""
         if mode == "name":
