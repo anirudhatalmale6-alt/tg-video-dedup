@@ -1,0 +1,40 @@
+========================================================================
+  Telegram Video Duplicate Remover  -  Windows setup (3 easy steps)
+========================================================================
+
+STEP 1 - Install Python (one time)
+----------------------------------
+  * Go to:  https://www.python.org/downloads/
+  * Click the big yellow "Download Python" button and run the installer.
+  * IMPORTANT: on the first screen, TICK the box "Add Python to PATH",
+    then click "Install Now".
+
+
+STEP 2 - Get the app
+--------------------
+  * Go to:  https://github.com/anirudhatalmale6-alt/tg-video-dedup
+  * Click the green "Code" button  ->  "Download ZIP".
+  * Right-click the downloaded ZIP  ->  "Extract All".
+
+
+STEP 3 - Run it
+---------------
+  * Open the extracted folder.
+  * Double-click  run.bat
+  * The first time, it installs what it needs (takes ~1 minute), then the
+    app window opens. After that, just double-click run.bat any time.
+
+
+INSIDE THE APP
+--------------
+  1. Get your API ID + API Hash (free, 2 minutes):
+        - Go to https://my.telegram.org , log in with your phone
+        - Click "API development tools", create an app (any name)
+        - Copy the api_id and api_hash into the app
+  2. Click "Save & Log in" -> enter the code Telegram sends to your phone.
+  3. Click "Load my groups", tick the groups to clean.
+  4. Click "Scan (build index)".
+  5. Click "Review duplicates" -> tick copies to delete -> "Delete ticked".
+  6. Click "Start watching" to keep it cleaning new videos automatically.
+
+That's it! If anything is unclear, message me and I'll walk you through it.
