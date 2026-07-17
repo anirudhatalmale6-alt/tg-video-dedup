@@ -1,0 +1,7 @@
+config.ini
+*.session
+*.session-journal
+index.db
+test_index.db
+__pycache__/
+*.pyc
