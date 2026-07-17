@@ -102,26 +102,38 @@ class Index:
         r = cur.fetchone()[0]
         return r or 0
 
-    def find_matches(self, norm_name, size, mode="name_size"):
-        """Return existing KEPT rows that match by the given mode, oldest first."""
+    def clear_group(self, group_id: int):
+        """Drop all rows for a group so a fresh scan reflects Telegram exactly
+        (prevents stale/'cached' entries lingering in the index)."""
+        self.conn.execute("DELETE FROM videos WHERE group_id=?", (group_id,))
+        self.conn.commit()
+
+    def find_matches(self, group_id, norm_name, size, mode="name_size"):
+        """Existing KEPT rows in the SAME group that match by the given mode,
+        oldest first. Duplicate detection is per-group: a video is a duplicate
+        only of other copies inside the same group."""
         if mode == "name":
             cur = self.conn.execute(
-                "SELECT * FROM videos WHERE status='kept' AND norm_name=? "
-                "ORDER BY date ASC", (norm_name,))
-        else:  # name_size (hash is verified separately after this narrows candidates)
+                "SELECT * FROM videos WHERE status='kept' AND group_id=? AND norm_name=? "
+                "ORDER BY date ASC", (group_id, norm_name))
+        else:
             cur = self.conn.execute(
-                "SELECT * FROM videos WHERE status='kept' AND norm_name=? AND size=? "
-                "ORDER BY date ASC", (norm_name, size))
+                "SELECT * FROM videos WHERE status='kept' AND group_id=? AND norm_name=? AND size=? "
+                "ORDER BY date ASC", (group_id, norm_name, size))
         return [dict(r) for r in cur.fetchall()]
 
     def duplicate_groups(self, mode="name_size"):
         """
-        Return groups of KEPT videos that are duplicates of each other.
-        Each element is a list of rows (dicts) sorted oldest-first; the first
-        item is the one we keep, the rest are deletion candidates.
+        Return sets of KEPT videos that are duplicates of each other WITHIN THE
+        SAME GROUP. Each element is a list of rows sorted oldest-first; the first
+        item is the one we keep, the rest are deletion candidates. Duplicates are
+        never matched across different groups - so copying group X into group Z
+        and then de-duping Z leaves the source group X untouched.
         """
-        key = "norm_name" if mode == "name" else "norm_name, size"
-        having_key = "norm_name" if mode == "name" else "norm_name || '|' || size"
+        if mode == "name":
+            having_key = "group_id || '|' || norm_name"
+        else:
+            having_key = "group_id || '|' || norm_name || '|' || size"
         cur = self.conn.execute(
             f"""
             SELECT * FROM videos
@@ -131,13 +143,14 @@ class Index:
                   WHERE status='kept' AND norm_name IS NOT NULL AND norm_name <> ''
                   GROUP BY {having_key} HAVING COUNT(*) > 1
               )
-            ORDER BY norm_name, size, date ASC
+            ORDER BY group_id, norm_name, size, date ASC
             """
         )
         groups, current, ck = [], [], None
         for r in cur.fetchall():
             r = dict(r)
-            k = (r["norm_name"],) if mode == "name" else (r["norm_name"], r["size"])
+            k = ((r["group_id"], r["norm_name"]) if mode == "name"
+                 else (r["group_id"], r["norm_name"], r["size"]))
             if k != ck:
                 if current:
                     groups.append(current)

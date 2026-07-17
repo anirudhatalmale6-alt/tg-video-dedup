@@ -207,6 +207,7 @@ async def cmd_scan(cfg):
     print(f"[+] Scanning {len(chats)} group(s) for videos...\n")
     grand = 0
     for entity, gid, title in chats:
+        idx.clear_group(gid)      # fresh scan: reflect Telegram exactly, no stale rows
         count = 0
         async for msg in _iter_videos(client, entity):
             idx.upsert(video_record(msg, gid, title, cfg["mode"],
@@ -305,7 +306,7 @@ async def catch_up(client, idx, chats, cfg, log=print):
                 await asyncio.sleep(e.seconds + 1)
         for msg in sorted(new_msgs, key=lambda m: m.id):
             rec = video_record(msg, gid, title, cfg["mode"], cfg["compare_unnamed_by_size"])
-            matches = idx.find_matches(rec["norm_name"], rec["size"], cfg["mode"])
+            matches = idx.find_matches(gid, rec["norm_name"], rec["size"], cfg["mode"])
             if matches:
                 found.append((rec, matches[0], entity))
             else:
@@ -351,7 +352,7 @@ async def cmd_watch(cfg, auto=False):
         gid = event.chat_id
         title = titles.get(gid, str(gid))
         rec = video_record(msg, gid, title, cfg["mode"], cfg["compare_unnamed_by_size"])
-        matches = idx.find_matches(rec["norm_name"], rec["size"], cfg["mode"])
+        matches = idx.find_matches(gid, rec["norm_name"], rec["size"], cfg["mode"])
         if not matches:
             idx.upsert(rec)
             print(f"[+] NEW unique video kept: \"{rec['filename']}\" "

@@ -385,6 +385,7 @@ class DedupApp:
         mode = self.mode.get()
         total = 0
         for entity, gid, title in chats:
+            self.idx.clear_group(gid)      # fresh scan: reflect Telegram exactly, no stale/cached rows
             n = 0; seen = set()
             for flt in (InputMessagesFilterVideo, InputMessagesFilterDocument):
                 try:
@@ -408,6 +409,7 @@ class DedupApp:
 
     async def _scan_one(self, entity, gid, title):
         self.idx = self.idx or Index()
+        self.idx.clear_group(gid)          # fresh scan of this one group
         mode = self.mode.get(); n = 0; seen = set()
         for flt in (InputMessagesFilterVideo, InputMessagesFilterDocument):
             try:
@@ -534,7 +536,7 @@ class DedupApp:
             gid = event.chat_id
             title = titles.get(gid, str(gid))
             rec = video_record(msg, gid, title, self.mode.get(), False)
-            matches = self.idx.find_matches(rec["norm_name"], rec["size"], self.mode.get())
+            matches = self.idx.find_matches(gid, rec["norm_name"], rec["size"], self.mode.get())
             if not matches:
                 self.idx.upsert(rec)
                 self._log(f"[+] New unique video kept: \"{rec['filename']}\" in {title}")
