@@ -122,29 +122,37 @@ class Index:
                 "ORDER BY date ASC", (group_id, norm_name, size))
         return [dict(r) for r in cur.fetchall()]
 
-    def duplicate_groups(self, mode="name_size"):
+    def duplicate_groups(self, mode="name_size", group_ids=None):
         """
         Return sets of KEPT videos that are duplicates of each other WITHIN THE
         SAME GROUP. Each element is a list of rows sorted oldest-first; the first
         item is the one we keep, the rest are deletion candidates. Duplicates are
         never matched across different groups - so copying group X into group Z
         and then de-duping Z leaves the source group X untouched.
+
+        If group_ids is given, only those groups are considered (so "check group
+        Z" shows Z's duplicates only, not other groups still in the index).
         """
         if mode == "name":
             having_key = "group_id || '|' || norm_name"
         else:
             having_key = "group_id || '|' || norm_name || '|' || size"
+        gfilter, gparams = "", []
+        if group_ids:
+            gfilter = " AND group_id IN (%s)" % ",".join("?" for _ in group_ids)
+            gparams = list(group_ids)
         cur = self.conn.execute(
             f"""
             SELECT * FROM videos
-            WHERE status='kept' AND norm_name IS NOT NULL AND norm_name <> ''
+            WHERE status='kept' AND norm_name IS NOT NULL AND norm_name <> '' {gfilter}
               AND {having_key} IN (
                   SELECT {having_key} FROM videos
-                  WHERE status='kept' AND norm_name IS NOT NULL AND norm_name <> ''
+                  WHERE status='kept' AND norm_name IS NOT NULL AND norm_name <> '' {gfilter}
                   GROUP BY {having_key} HAVING COUNT(*) > 1
               )
             ORDER BY group_id, norm_name, size, date ASC
-            """
+            """,
+            gparams + gparams,
         )
         groups, current, ck = [], [], None
         for r in cur.fetchall():

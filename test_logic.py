@@ -82,7 +82,39 @@ z.clear_group(2)
 assert z.duplicate_groups("name_size") == []
 print("5. clear_group removes a group's rows (fresh scan, no caching)  OK")
 
+# ---- Scenario 6: UNNAMED videos matched by size+duration key ----
+for db in ("test_index3.db",):
+    if os.path.exists(db): os.remove(db)
+u = Index("test_index3.db")
+mid[0] = 0
+def addu(normname, size, days, group):
+    mid[0]+=1
+    u.upsert({"group_id":group,"group_name":"G","message_id":mid[0],"filename":"",
+              "norm_name":normname,"size":size,"mime_type":"video/mp4",
+              "file_unique_id":str(mid[0]),"date":(base+timedelta(days=days)).isoformat(),
+              "content_hash":None,"status":"kept"})
+# two unnamed copies of the same video (same size+duration key) in group 2 -> duplicate
+addu("__vid__500__30", 500, 0, 2)
+addu("__vid__500__30", 500, 3, 2)
+# an unnamed video with different duration -> not a duplicate
+addu("__vid__500__99", 500, 0, 2)
+udups = u.duplicate_groups("name_size")
+assert len(udups) == 1 and len(udups[0]) == 2, f"unnamed dup by size+dur failed: {udups}"
+print("6. unnamed videos matched by size+duration key  OK")
+
+# ---- Scenario 7: group_ids scoping ----
+addu("__vid__700__10", 700, 0, 1)   # group 1
+addu("__vid__700__10", 700, 5, 1)   # dup in group 1
+all_dups = u.duplicate_groups("name_size")
+only_g2 = u.duplicate_groups("name_size", [2])
+only_g1 = u.duplicate_groups("name_size", [1])
+assert len(all_dups) == 2, f"expected 2 total, got {len(all_dups)}"
+assert len(only_g2) == 1 and all(r["group_id"]==2 for r in only_g2[0])
+assert len(only_g1) == 1 and all(r["group_id"]==1 for r in only_g1[0])
+print("7. duplicate_groups scoped to given group_ids only  OK")
+
+u.close()
 idx.close(); z.close()
-for db in (TESTDB, "test_index2.db"):
+for db in (TESTDB, "test_index2.db", "test_index3.db"):
     if os.path.exists(db): os.remove(db)
 print("\nALL TESTS PASSED")

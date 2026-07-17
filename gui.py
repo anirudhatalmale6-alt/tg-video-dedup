@@ -421,7 +421,8 @@ class DedupApp:
                         self._log(f"    (rate limited, waiting {e.seconds}s)"); await asyncio.sleep(e.seconds + 1)
                 total += n
                 self._log(f"[+] {title}: {n} videos.")
-            dups = self.idx.duplicate_groups(mode)
+            scanned_ids = [gid for _, gid, _ in chats]
+            dups = self.idx.duplicate_groups(mode, scanned_ids)
             extra = sum(len(g) - 1 for g in dups)
             self._log(f"[+] Scan {'stopped' if self.cancel else 'done'}. {total} videos indexed. "
                       f"{len(dups)} duplicate set(s) -> {extra} removable copy(ies).")
@@ -495,20 +496,28 @@ class DedupApp:
             self._log(f"[+] Copy {'stopped' if self.cancel else 'finished'}: {done} video(s) in '{dst_name}'.")
             if self.cancel:
                 return
-            # Then apply the duplicate rules on the destination (as requested).
+            # Then apply the duplicate rules on the destination only (as requested).
             self._log("[*] Applying duplicate rules on the destination group...")
             await self._scan_one(dst_ent, dst_gid, dst_name)
-            dups = self.idx.duplicate_groups(self.mode.get())
+            dups = self.idx.duplicate_groups(self.mode.get(), [dst_gid])
             extra = sum(len(g) - 1 for g in dups)
-            self._log(f"[+] Done. {extra} duplicate copy(ies) detected - "
-                      f"click 'Review duplicates' to remove them (keeps the oldest).")
+            # tick ONLY the destination so 'Review duplicates' shows just this group
+            def tick_dst():
+                for var in self.checkvars.values():
+                    var.set(False)
+                self.checkvars.setdefault(dst_gid, tk.BooleanVar()).set(True)
+            self.root.after(0, tick_dst)
+            self._log(f"[+] Done. {extra} duplicate copy(ies) detected in '{dst_name}'. "
+                      f"'{dst_name}' is now ticked - click 'Review duplicates' to remove them "
+                      f"(keeps the oldest).")
         finally:
             self._set_busy(False)
 
     async def _collect_dups(self):
         if not self.idx:
             self.idx = Index()
-        return self.idx.duplicate_groups(self.mode.get())
+        # show duplicates only for the ticked groups (none ticked => all)
+        return self.idx.duplicate_groups(self.mode.get(), self._selected_targets())
 
     async def _delete_msgs(self, items):
         """items: list of (group_id, message_id, group_name)."""
@@ -561,7 +570,7 @@ class DedupApp:
         titles = {gid: t for _, gid, t in chats}
         self._log("[*] Catching up on videos added while the app was off...")
         await self._incremental_index(chats)
-        dups = self.idx.duplicate_groups(self.mode.get())
+        dups = self.idx.duplicate_groups(self.mode.get(), [gid for _, gid, _ in chats])
         if dups:
             self._log(f"[!] {sum(len(g)-1 for g in dups)} duplicate(s) waiting - "
                       f"click 'Review duplicates' to clear them.")

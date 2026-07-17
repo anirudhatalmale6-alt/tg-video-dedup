@@ -104,15 +104,21 @@ def is_video(message):
     return ext in VIDEO_EXTS
 
 
-def video_record(message, group_id, group_name, mode, compare_unnamed_by_size):
-    """Build a dict row for the index from a Telethon message."""
+def video_record(message, group_id, group_name, mode, compare_unnamed_by_size=True):
+    """Build a dict row for the index from a Telethon message.
+
+    Many Telegram videos are sent WITHOUT a filename (streamable videos). For
+    those we build a match key from the file size + duration, so re-posted or
+    forwarded copies of the same video still pair up as duplicates. Named videos
+    keep matching by their filename.
+    """
     f = message.file
     name = f.name or ""
     n = norm(name)
-    # For name-less videos, fall back to the size as the match key when allowed,
-    # so two unnamed identical-size files can still be paired.
-    if not n and compare_unnamed_by_size and f.size:
-        n = f"__unnamed__{f.size}"
+    if not n:
+        dur = getattr(f, "duration", None)
+        dur = int(dur) if dur else 0
+        n = f"__vid__{f.size or 0}__{dur}"       # size + duration key for unnamed videos
     date = message.date
     if date and date.tzinfo is None:
         date = date.replace(tzinfo=timezone.utc)
