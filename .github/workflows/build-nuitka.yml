@@ -23,7 +23,7 @@ jobs:
       - name: Install app dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install telethon
+          pip install telethon pillow
 
       - name: Build with Nuitka
         uses: Nuitka/Nuitka-Action@main
@@ -32,7 +32,9 @@ jobs:
           script-name: gui.py
           mode: onefile
           enable-plugins: tk-inter
-          include-package: telethon
+          include-package: |
+            telethon
+            PIL
           windows-console-mode: disable
 
       - name: Rename output

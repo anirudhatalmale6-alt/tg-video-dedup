@@ -17,6 +17,7 @@ Run:  python gui.py
 
 import asyncio
 import configparser
+import io
 import os
 import queue
 import threading
@@ -29,6 +30,12 @@ from telethon.errors import FloodWaitError
 
 from db import Index
 from tgdedup import (is_video, video_record, human_size, VIDEO_EXTS)
+
+try:
+    from PIL import Image, ImageTk        # for the video thumbnails in the review list
+    HAVE_PIL = True
+except Exception:
+    HAVE_PIL = False
 
 CONFIG = "config.ini"
 
@@ -702,22 +709,45 @@ class DedupApp:
         canvas.create_window((0, 0), window=frame, anchor="nw")
         frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
 
-        checks = []  # (var, (gid, mid, gname))
+        checks = []       # (var, (gid, mid, gname))
+        thumb_targets = []  # (label_widget, gid, mid) to load preview images into
+        self._thumb_refs = []  # keep PhotoImage refs alive
+
+        def name_of(v):
+            return v['filename'] if v['filename'] else "(unnamed video)"
+
         for gi, g in enumerate(dup_groups, 1):
             keep = g[0]
             box = ttk.LabelFrame(
-                frame, text=f"{gi}. {keep['filename'] or '(no name)'}  "
+                frame, text=f"{gi}. {name_of(keep)}  "
                             f"[{human_size(keep['size'])}]  - {len(g)} copies")
             box.pack(fill="x", padx=8, pady=5)
-            ttk.Label(box, text=f"KEEP (oldest): {keep['group_name']}  |  {keep['date']}",
-                      foreground="#070").pack(anchor="w", padx=6)
+            # KEEP row (with thumbnail)
+            krow = ttk.Frame(box); krow.pack(anchor="w", fill="x", padx=6, pady=1)
+            klbl = ttk.Label(krow, text="[ ]", width=10, anchor="center")
+            klbl.pack(side="left")
+            ttk.Label(krow, text=f"KEEP (oldest): {keep['group_name']}  |  {keep['date']}",
+                      foreground="#070").pack(side="left", padx=6)
+            thumb_targets.append((klbl, keep["group_id"], keep["message_id"]))
+            # victim rows (with thumbnail + checkbox)
             for v in g[1:]:
+                vrow = ttk.Frame(box); vrow.pack(anchor="w", fill="x", padx=20, pady=1)
+                vlbl = ttk.Label(vrow, text="[ ]", width=10, anchor="center")
+                vlbl.pack(side="left")
                 var = tk.BooleanVar(value=True)
                 ttk.Checkbutton(
-                    box, variable=var,
+                    vrow, variable=var,
                     text=f"delete copy in {v['group_name']}  |  {v['date']}  (msg {v['message_id']})"
-                ).pack(anchor="w", padx=20)
+                ).pack(side="left", padx=4)
                 checks.append((var, (v["group_id"], v["message_id"], v["group_name"])))
+                thumb_targets.append((vlbl, v["group_id"], v["message_id"]))
+
+        # load thumbnails in the background (only if Pillow + a live client are available)
+        if HAVE_PIL and self.client:
+            self.submit(self._load_thumbs(thumb_targets))
+        else:
+            for lbl, _, _ in thumb_targets:
+                lbl.config(text="(no preview)")
 
         bar = ttk.Frame(win); bar.pack(side="bottom", fill="x")
         def do_delete():
@@ -730,6 +760,45 @@ class DedupApp:
             self.submit(self._delete_msgs(picked))
         ttk.Button(bar, text=f"Delete ticked copies", command=do_delete).pack(side="right", padx=8, pady=6)
         ttk.Button(bar, text="Cancel", command=win.destroy).pack(side="right", pady=6)
+        if HAVE_PIL and self.client:
+            ttk.Label(bar, text="loading previews...").pack(side="left", padx=8)
+
+    async def _load_thumbs(self, targets):
+        """Download each video's small thumbnail and show it in the review list."""
+        entities = {}
+        for lbl, gid, mid in targets:
+            try:
+                ent = entities.get(gid)
+                if ent is None:
+                    ent = await self.client.get_entity(gid)
+                    entities[gid] = ent
+                msg = await self.client.get_messages(ent, ids=mid)
+                data = await self.client.download_media(msg, file=bytes, thumb=0) if msg else None
+                if data:
+                    self.root.after(0, lambda l=lbl, d=data: self._apply_thumb(l, d))
+                else:
+                    self.root.after(0, lambda l=lbl: self._safe_cfg(l, text="(no preview)"))
+            except Exception:
+                self.root.after(0, lambda l=lbl: self._safe_cfg(l, text="(no preview)"))
+
+    def _safe_cfg(self, lbl, **kw):
+        try:
+            if lbl.winfo_exists():
+                lbl.config(**kw)
+        except Exception:
+            pass
+
+    def _apply_thumb(self, lbl, data):
+        try:
+            if not lbl.winfo_exists():
+                return
+            img = Image.open(io.BytesIO(data))
+            img.thumbnail((96, 72))
+            photo = ImageTk.PhotoImage(img)
+            self._thumb_refs.append(photo)   # keep a reference so it isn't garbage-collected
+            lbl.config(image=photo, text="")
+        except Exception:
+            self._safe_cfg(lbl, text="(no preview)")
 
     # ---------------- shutdown ----------------
     def _on_close(self):
