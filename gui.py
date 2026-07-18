@@ -20,7 +20,9 @@ import configparser
 import io
 import os
 import queue
+import sys
 import threading
+from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, simpledialog
 
@@ -48,6 +50,8 @@ class DedupApp:
         root.minsize(760, 560)
 
         self.logq = queue.Queue()
+        self.hist_path = os.path.abspath("history.log")   # permanent record of every action
+        self._start_history()
         self.loop = asyncio.new_event_loop()
         self.client = None
         self.idx = None
@@ -185,7 +189,11 @@ class DedupApp:
         lf.pack(fill="both", expand=True, **pad)
         self.log = scrolledtext.ScrolledText(lf, height=12, state="disabled", wrap="word")
         self.log.pack(fill="both", expand=True, padx=4, pady=4)
+        histbar = ttk.Frame(lf); histbar.pack(fill="x", padx=4, pady=(0, 4))
+        ttk.Label(histbar, text="Every action is saved to history.log").pack(side="left")
+        ttk.Button(histbar, text="Open history log", command=self._open_history).pack(side="right")
         self._log("Welcome! Step 1: enter your API ID + Hash and click 'Save & Log in'.")
+        self._log(f"Tip: a permanent record of everything is saved to {self.hist_path}")
 
     # ---------------- threading helpers ----------------
     def _run_loop(self):
@@ -202,8 +210,38 @@ class DedupApp:
         fut.add_done_callback(_cb)
         return fut
 
+    def _start_history(self):
+        """Write a session banner so each run is easy to find in the history file."""
+        try:
+            with open(self.hist_path, "a", encoding="utf-8") as f:
+                f.write(f"\n===== session started {datetime.now():%Y-%m-%d %H:%M:%S} =====\n")
+        except Exception:
+            pass
+
     def _log(self, msg):
         self.logq.put(str(msg))
+        # persist every line with a timestamp so there is a permanent transaction history
+        try:
+            with open(self.hist_path, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}  {msg}\n")
+        except Exception:
+            pass
+
+    def _open_history(self):
+        path = self.hist_path
+        if not os.path.exists(path):
+            messagebox.showinfo("History log",
+                                "No history yet - it's written as soon as the app logs any activity.")
+            return
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(path)                       # noqa: attribute exists on Windows
+            elif sys.platform == "darwin":
+                import subprocess; subprocess.Popen(["open", path])
+            else:
+                import subprocess; subprocess.Popen(["xdg-open", path])
+        except Exception:
+            messagebox.showinfo("History log", f"Your full history is saved here:\n{path}")
 
     def _drain_log(self):
         try:

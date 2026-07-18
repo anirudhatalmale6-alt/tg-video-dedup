@@ -89,6 +89,13 @@ exactly the same, but instead of deleting they only **list** in the Activity log
 what *would* be deleted. Nothing is ever removed while it is ticked – perfect for
 testing. Untick it when you are ready to delete for real.
 
+**History log:** every action the app takes (scans, copies, and every single
+deletion with its message id and group) is saved with a timestamp to
+`history.log` in the app folder, across sessions. Click **Open history log**
+under the Activity log to view the full record any time. This is your permanent
+audit trail of exactly what the app did – note it only ever records message
+deletions; the app never deletes or leaves a group.
+
 **Copy videos between groups:** in section 4, pick a **From** group and a **To**
 group, click **Copy all videos**. It forwards every video to the destination
 (handles 1000+ with automatic pacing), then detects duplicates there so you can

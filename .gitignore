@@ -3,6 +3,7 @@ config.ini
 *.session-journal
 index.db
 test_index.db
+history.log
 demo_index.db
 demo_walkthrough.mp4
 __pycache__/
