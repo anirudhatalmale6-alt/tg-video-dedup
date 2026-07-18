@@ -46,8 +46,8 @@ class DedupApp:
     def __init__(self, root):
         self.root = root
         root.title("Telegram Video Duplicate Remover")
-        root.geometry("820x620")
-        root.minsize(760, 560)
+        root.geometry("940x640")
+        root.minsize(880, 580)
 
         self.logq = queue.Queue()
         self.hist_path = os.path.abspath("history.log")   # permanent record of every action
@@ -176,13 +176,21 @@ class DedupApp:
         cp = ttk.LabelFrame(self.root, text="4. Copy videos: one group -> another (then removes duplicates)")
         cp.pack(fill="x", **pad)
         ttk.Label(cp, text="From:").grid(row=0, column=0, sticky="e", **pad)
-        self.copy_src = ttk.Combobox(cp, state="readonly", width=26)
+        self.copy_src = ttk.Combobox(cp, state="readonly", width=22)
         self.copy_src.grid(row=0, column=1, **pad)
         ttk.Label(cp, text="To:").grid(row=0, column=2, sticky="e", **pad)
-        self.copy_dst = ttk.Combobox(cp, state="readonly", width=26)
+        self.copy_dst = ttk.Combobox(cp, state="readonly", width=22)
         self.copy_dst.grid(row=0, column=3, **pad)
         self.btn_copy = ttk.Button(cp, text="Copy all videos", command=self.on_copy, state="disabled")
         self.btn_copy.grid(row=0, column=4, **pad)
+        # Safe batching: copy N videos, pause, then continue - avoids Telegram anti-spam on big moves
+        ttk.Label(cp, text="Max per batch:").grid(row=1, column=0, sticky="e", **pad)
+        self.copy_limit = ttk.Entry(cp, width=10); self.copy_limit.insert(0, "200")
+        self.copy_limit.grid(row=1, column=1, sticky="w", **pad)
+        ttk.Label(cp, text="Pause (min):").grid(row=1, column=2, sticky="e", **pad)
+        self.copy_wait = ttk.Entry(cp, width=10); self.copy_wait.insert(0, "5")
+        self.copy_wait.grid(row=1, column=3, sticky="w", **pad)
+        ttk.Label(cp, text="(0 = all at once)", foreground="#666").grid(row=1, column=4, sticky="w", **pad)
 
         # Log
         lf = ttk.LabelFrame(self.root, text="Activity log")
@@ -525,7 +533,7 @@ class DedupApp:
         self._log(f"[+] {title}: {n} videos indexed.")
         return n
 
-    async def _copy(self, src_gid, src_name, dst_gid, dst_name):
+    async def _copy(self, src_gid, src_name, dst_gid, dst_name, limit=0, wait_min=0.0):
         if not await self._ensure_client():
             return
         try:
@@ -553,22 +561,36 @@ class DedupApp:
         self._set_busy(True)
         try:
             done = 0
-            BATCH = 30            # smaller batches = smoother, fewer big rate-limit pauses
-            for i in range(0, total, BATCH):
-                if self.cancel:
-                    self._log("[*] Stopped by user."); break
-                batch = ids[i:i + BATCH]
-                while not self.cancel:
-                    try:
-                        await self.client.forward_messages(dst_ent, batch, src_ent)
+            BATCH = 30            # smaller sub-batches = smoother, fewer big rate-limit pauses
+            chunk = limit if (limit and limit > 0) else total   # videos before a longer cooldown
+            if limit and limit > 0:
+                self._log(f"[+] Safe mode: copying {chunk} at a time, then pausing {wait_min:g} min "
+                          f"before the next batch (avoids Telegram's anti-spam). Keep the app open - "
+                          f"it continues automatically until all {total} are done.")
+            pos = 0
+            while pos < total and not self.cancel:
+                end = min(pos + chunk, total)
+                for i in range(pos, end, BATCH):
+                    if self.cancel:
                         break
-                    except FloodWaitError as e:
-                        await self._sleep_cancellable(e.seconds, "Telegram rate limit")
-                    except Exception as e:
-                        self._log(f"    ! batch error, skipping: {e}"); break
-                done += len(batch)
-                self._log(f"    copied {min(done, total)}/{total}...")
-                await self._sleep_cancellable(2, "")       # gentle pacing so Telegram is happy
+                    batch = ids[i:i + BATCH]
+                    while not self.cancel:
+                        try:
+                            await self.client.forward_messages(dst_ent, batch, src_ent)
+                            break
+                        except FloodWaitError as e:
+                            await self._sleep_cancellable(e.seconds, "Telegram rate limit")
+                        except Exception as e:
+                            self._log(f"    ! batch error, skipping: {e}"); break
+                    done += len(batch)
+                    self._log(f"    copied {min(done, total)}/{total}...")
+                    await self._sleep_cancellable(2, "")       # gentle pacing so Telegram is happy
+                pos = end
+                # longer cooldown between big batches (only if a limit + wait were set and more remain)
+                if pos < total and not self.cancel and wait_min > 0:
+                    self._log(f"[*] Batch done ({min(done, total)}/{total}). Pausing {wait_min:g} min before "
+                              f"the next batch (it continues on its own - just keep the app open). Press STOP to cancel.")
+                    await self._sleep_cancellable(int(wait_min * 60), "Cooldown between batches")
             self._log(f"[+] Copy {'stopped' if self.cancel else 'finished'}: {done} video(s) in '{dst_name}'.")
             if self.cancel:
                 return
@@ -739,13 +761,24 @@ class DedupApp:
             messagebox.showinfo("Copy videos", "Source and destination must be different groups.")
             return
         src, dst = self.groups[s], self.groups[d]
+        try:
+            limit = max(0, int(self.copy_limit.get().strip() or "0"))
+        except ValueError:
+            limit = 0
+        try:
+            wait_min = max(0.0, float(self.copy_wait.get().strip() or "0"))
+        except ValueError:
+            wait_min = 0.0
+        info = (f"\n\nSafe mode: {limit} videos per batch, "
+                f"then a {wait_min:g} min pause, repeating until done."
+                if limit > 0 else "\n\nAll videos will be copied in one go.")
         if not messagebox.askyesno(
                 "Copy videos",
-                f"Copy ALL videos from:\n    {src[1]}\n\nto:\n    {dst[1]}\n\n"
+                f"Copy videos from:\n    {src[1]}\n\nto:\n    {dst[1]}{info}\n\n"
                 f"After copying, duplicates in the destination will be detected so you "
                 f"can remove them. Continue?"):
             return
-        self.submit(self._copy(src[0], src[1], dst[0], dst[1]))
+        self.submit(self._copy(src[0], src[1], dst[0], dst[1], limit, wait_min))
 
     def on_cross(self):
         if not self.groups:

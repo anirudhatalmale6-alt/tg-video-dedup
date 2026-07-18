@@ -101,6 +101,12 @@ group, click **Copy all videos**. It forwards every video to the destination
 (handles 1000+ with automatic pacing), then detects duplicates there so you can
 remove them.
 
+*Safe batching:* set **Max per batch** (e.g. `200`) and **Pause (min)** (e.g.
+`5`). The app then copies that many videos, pauses for the given minutes, and
+automatically continues the next batch until everything is moved. This keeps big
+transfers under Telegram's anti-spam limits – recommended for large moves into a
+new group. Set **Max per batch** to `0` to copy everything in one go.
+
 ## Usage – Command line
 
 ```
