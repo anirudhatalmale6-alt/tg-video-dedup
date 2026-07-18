@@ -55,6 +55,7 @@ class DedupApp:
         self.displayed = []       # currently shown (after search filter)
         self.checkvars = {}       # group_id -> BooleanVar (persists across filtering)
         self.mode = tk.StringVar(value="name_size")
+        self.dry_run = tk.BooleanVar(value=False)   # Preview only: simulate deletes, remove nothing
         self.watching = False
         self._watch_handler = None
         self.cancel = False       # set by STOP button to abort a running scan/copy/delete
@@ -153,6 +154,9 @@ class DedupApp:
         ttk.Label(af, text="Match by:").pack(anchor="w", padx=6, pady=(6, 0))
         ttk.Combobox(af, textvariable=self.mode, state="readonly", width=14,
                      values=["name_size", "name"]).pack(padx=6, pady=2)
+        # Preview / dry-run: when ticked, deletions are only listed, never performed.
+        ttk.Checkbutton(af, text="Preview only (no delete)",
+                        variable=self.dry_run, command=self._on_dry_toggle).pack(anchor="w", padx=6, pady=(2, 0))
         self.btn_scan = ttk.Button(af, text="Scan (build index)", command=self.on_scan, state="disabled")
         self.btn_scan.pack(fill="x", padx=6, pady=4)
         self.btn_review = ttk.Button(af, text="Review duplicates", command=self.on_review, state="disabled")
@@ -231,6 +235,13 @@ class DedupApp:
     def on_stop(self):
         self.cancel = True
         self._log("[*] Stop requested - finishing the current step and halting...")
+
+    def _on_dry_toggle(self):
+        if self.dry_run.get():
+            self._log("[*] PREVIEW ONLY is ON - deletions will only be LISTED, nothing is removed. "
+                      "Great for testing safely.")
+        else:
+            self._log("[*] Preview only is OFF - deletions are real again (still asks you to confirm).")
 
     async def _sleep_cancellable(self, seconds, reason=""):
         """Sleep in 1s steps so STOP works and long Telegram waits show a countdown
@@ -548,6 +559,13 @@ class DedupApp:
 
     async def _delete_msgs(self, items):
         """items: list of (group_id, message_id, group_name)."""
+        if self.dry_run.get():
+            self._log(f"[PREVIEW] Preview-only mode is ON - NOTHING will be deleted.")
+            for gid, mid, gname in items:
+                self._log(f"    (preview) would delete msg {mid} in {gname}")
+            self._log(f"[PREVIEW] {len(items)} video(s) WOULD be deleted. "
+                      f"Untick 'Preview only (no delete)' when you're ready to delete for real.")
+            return
         ok = 0
         self.cancel = False
         self._set_busy(True)
@@ -621,6 +639,10 @@ class DedupApp:
             oldest = matches[0]
             self._log(f"[!] Duplicate posted in {title}: \"{rec['filename']}\" "
                       f"({human_size(rec['size'])}) - already exists in {oldest['group_name']}")
+            if self.dry_run.get():
+                self._log(f"    (preview) would delete this new copy from {title} "
+                          f"(Preview only is ON - kept).")
+                return
             do = self._ask_yesno("Duplicate video detected",
                                  f"'{rec['filename']}' already exists.\n\nDelete this new copy from {title}?")
             if do:
@@ -826,11 +848,19 @@ class DedupApp:
             picked = [t for var, t in checks if var.get()]
             if not picked:
                 messagebox.showinfo("Nothing selected", "Tick at least one copy to delete."); return
-            if not messagebox.askyesno("Confirm", f"Delete {len(picked)} duplicate video(s)? This cannot be undone."):
+            if self.dry_run.get():
+                if not messagebox.askyesno(
+                        "Preview only",
+                        f"Preview mode is ON.\n\nThis will only LIST the {len(picked)} video(s) that "
+                        f"WOULD be deleted in the Activity log - nothing will actually be removed.\n\n"
+                        f"Continue with the preview?"):
+                    return
+            elif not messagebox.askyesno("Confirm", f"Delete {len(picked)} duplicate video(s)? This cannot be undone."):
                 return
             win.destroy()
             self.submit(self._delete_msgs(picked))
-        ttk.Button(bar, text=f"Delete ticked copies", command=do_delete).pack(side="right", padx=8, pady=6)
+        del_text = "Preview ticked copies" if self.dry_run.get() else "Delete ticked copies"
+        ttk.Button(bar, text=del_text, command=do_delete).pack(side="right", padx=8, pady=6)
         ttk.Button(bar, text="Cancel", command=win.destroy).pack(side="right", pady=6)
         if HAVE_PIL and self.client:
             ttk.Label(bar, text="loading previews...").pack(side="left", padx=8)

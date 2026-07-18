@@ -83,6 +83,12 @@ Then, top to bottom in the window:
 5. Click **Start watching** – Phase 2. It first catches up on anything added
    while the app was off, then checks every new video live. Leave it running.
 
+**Preview only (no delete):** tick this box in section 3 to run everything in a
+safe dry-run. Scan, Review, Copy, Check-vs-other-groups and Watch all behave
+exactly the same, but instead of deleting they only **list** in the Activity log
+what *would* be deleted. Nothing is ever removed while it is ticked – perfect for
+testing. Untick it when you are ready to delete for real.
+
 **Copy videos between groups:** in section 4, pick a **From** group and a **To**
 group, click **Copy all videos**. It forwards every video to the destination
 (handles 1000+ with automatic pacing), then detects duplicates there so you can
