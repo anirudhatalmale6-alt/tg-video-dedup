@@ -24,7 +24,7 @@ import sys
 import threading
 from datetime import datetime
 import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox, simpledialog
+from tkinter import ttk, scrolledtext, messagebox, simpledialog, filedialog
 
 from telethon import TelegramClient, events
 from telethon.tl.types import InputMessagesFilterVideo, InputMessagesFilterDocument
@@ -169,6 +169,8 @@ class DedupApp:
         self.btn_watch.pack(fill="x", padx=6, pady=4)
         self.btn_cross = ttk.Button(af, text="Check vs other groups", command=self.on_cross, state="disabled")
         self.btn_cross.pack(fill="x", padx=6, pady=4)
+        self.btn_download = ttk.Button(af, text="⬇ Download videos to PC", command=self.on_download, state="disabled")
+        self.btn_download.pack(fill="x", padx=6, pady=4)
         self.btn_stop = ttk.Button(af, text="■ STOP", command=self.on_stop, state="disabled")
         self.btn_stop.pack(fill="x", padx=6, pady=(12, 4))
 
@@ -270,7 +272,7 @@ class DedupApp:
     def _enable_after_login(self):
         def go():
             for b in (self.btn_scan, self.btn_review, self.btn_watch,
-                      self.btn_copy, self.btn_cross):
+                      self.btn_copy, self.btn_cross, self.btn_download):
                 b.config(state="normal")
         self.root.after(0, go)
 
@@ -611,6 +613,74 @@ class DedupApp:
         finally:
             self._set_busy(False)
 
+    def _safe_folder(self, name):
+        keep = "".join(c if (c.isalnum() or c in " -_.") else "_" for c in (name or "group")).strip()
+        return keep[:60] or "group"
+
+    def _video_filename(self, msg, gid):
+        """A safe, unique .mp4 filename for a video message (keeps the real name if it has one)."""
+        name, ext = None, ".mp4"
+        f = getattr(msg, "file", None)
+        if f is not None:
+            name = f.name
+            ext = f.ext or ".mp4"
+        if name:
+            stem = name.rsplit(".", 1)[0]
+            safe = "".join(c if (c.isalnum() or c in " -_()") else "_" for c in stem).strip() or "video"
+            return f"{safe[:80]}_{msg.id}{ext}"
+        return f"video_{gid}_{msg.id}{ext}"
+
+    async def _download(self, folder):
+        if not await self._ensure_client():
+            return
+        chats = await self._resolve_chats()
+        if not chats:
+            self._log("[!] No groups selected. Click 'Load my groups' and tick some, then Download."); return
+        self.cancel = False
+        self._set_busy(True)
+        saved_total = 0
+        try:
+            for entity, gid, title in chats:
+                if self.cancel:
+                    self._log("[*] Stopped by user."); break
+                sub = os.path.join(folder, self._safe_folder(title))
+                os.makedirs(sub, exist_ok=True)
+                self._log(f"[*] Downloading videos from '{title}' -> {sub}")
+                n = 0; skipped = 0; seen = set()
+                for flt in (InputMessagesFilterVideo, InputMessagesFilterDocument):
+                    try:
+                        async for msg in self.client.iter_messages(entity, filter=flt):
+                            if self.cancel:
+                                break
+                            if msg.id in seen or not is_video(msg):
+                                continue
+                            seen.add(msg.id)
+                            path = os.path.join(sub, self._video_filename(msg, gid))
+                            size = getattr(getattr(msg, "file", None), "size", None)
+                            # resume-friendly: skip files already fully downloaded
+                            if os.path.exists(path) and size and os.path.getsize(path) == size:
+                                skipped += 1
+                                continue
+                            while not self.cancel:
+                                try:
+                                    await self.client.download_media(msg, file=path)
+                                    n += 1; saved_total += 1
+                                    if n % 10 == 0:
+                                        self._log(f"    {title}: {n} downloaded...")
+                                    break
+                                except FloodWaitError as e:
+                                    await self._sleep_cancellable(e.seconds, "Telegram rate limit")
+                                except Exception as e:
+                                    self._log(f"    ! could not download msg {msg.id}: {e}"); break
+                    except FloodWaitError as e:
+                        await self._sleep_cancellable(e.seconds, "Telegram rate limit")
+                extra = f" ({skipped} already saved)" if skipped else ""
+                self._log(f"[+] '{title}': {n} new video(s) saved{extra} -> {sub}")
+            self._log(f"[+] Download {'stopped' if self.cancel else 'finished'}: {saved_total} video(s) now on your PC. "
+                      f"This folder is your safe backup - copy it to a drive or cloud and Telegram can never touch it.")
+        finally:
+            self._set_busy(False)
+
     async def _collect_dups(self):
         if not self.idx:
             self.idx = Index()
@@ -779,6 +849,26 @@ class DedupApp:
                 f"can remove them. Continue?"):
             return
         self.submit(self._copy(src[0], src[1], dst[0], dst[1], limit, wait_min))
+
+    def on_download(self):
+        if not self.groups:
+            messagebox.showinfo("Download videos",
+                                "Click 'Load my groups' first, then tick the group(s) to download.")
+            return
+        folder = filedialog.askdirectory(title="Choose a folder to save your videos into")
+        if not folder:
+            return
+        tgt = self._selected_targets()
+        n = len(self.groups) if tgt is None else len(tgt)
+        if not messagebox.askyesno(
+                "Download videos to PC",
+                f"Download ALL videos from {n} group(s) into:\n{folder}\n\n"
+                f"Each group gets its own subfolder. This is your safe backup - real .mp4 "
+                f"files on your PC that Telegram can never delete.\n\n"
+                f"Big collections take time + disk space. You can press STOP anytime, and "
+                f"re-running skips files already downloaded. Continue?"):
+            return
+        self.submit(self._download(folder))
 
     def on_cross(self):
         if not self.groups:

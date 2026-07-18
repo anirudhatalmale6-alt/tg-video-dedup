@@ -89,6 +89,13 @@ exactly the same, but instead of deleting they only **list** in the Activity log
 what *would* be deleted. Nothing is ever removed while it is ticked – perfect for
 testing. Untick it when you are ready to delete for real.
 
+**Download videos to PC (backup):** tick the group(s), click **⬇ Download videos
+to PC**, and pick a folder. Every video is saved as a real `.mp4` file (each group
+in its own subfolder) on your computer – your own backup that no Telegram ban or
+deletion can ever touch. Re-running skips files already downloaded, so it is safe
+to stop and resume. Back that folder up to a drive or cloud and your collection is
+safe forever.
+
 **History log:** every action the app takes (scans, copies, and every single
 deletion with its message id and group) is saved with a timestamp to
 `history.log` in the app folder, across sessions. Click **Open history log**
